@@ -15,7 +15,7 @@ class Config:
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.drive_input_folder_id = os.environ.get("DRIVE_INPUT_FOLDER_ID")
         self.drive_output_folder_id = os.environ.get("DRIVE_OUTPUT_FOLDER_ID")
-        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp-image-generation")
+        self.gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
 
     def validate(self):
         missing = []
