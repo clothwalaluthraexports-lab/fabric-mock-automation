@@ -39,7 +39,7 @@ MOCK_PROMPTS = {
 
 class GeminiClient:
     def __init__(self, config):
-        self.client = genai.Client(api_key=config.gemini_api_key)
+        self.client = genai.Client(api_key=config.gemini_api_key, http_options={'api_version': 'v1alpha'})
         self.model = config.gemini_model
 
     def generate_mock(self, image_bytes, mock_type):
