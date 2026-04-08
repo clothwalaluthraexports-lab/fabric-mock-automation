@@ -1,82 +1,63 @@
 """
-gemini_client.py — Gemini API image generation handler.
-
-Uses the gemini-2.0-flash-exp model which accepts an image as input
-(your fabric design) and returns generated mock images as output.
-
-The full prompt = [design_image_bytes] + [mock_type_prompt] + [negative_instructions].
-Gemini sees your original design and is asked to render it on a specific
-garment/product type using the locked prompt.
+Google Gemini AI client — sends a fabric design image and returns generated mock images.
 """
 
-import time
-import google.generativeai as genai
-from google.generativeai import types as gtypes
+import logging
+import io
+from google import genai
+from google.genai import types
+from PIL import Image
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL, MAX_RETRIES
+logger = logging.getLogger(__name__)
 
-# Authenticate once at import time
-genai.configure(api_key=GEMINI_API_KEY)
+MOCK_PROMPTS = {
+    "fabric_roll": (
+        "Generate a professional product photograph of this fabric design printed/woven onto "
+        "a fabric roll. The roll should be placed on a clean white or light grey surface, "
+        "slightly unrolled to show the pattern clearly. Studio lighting, high quality, "
+        "photorealistic style."
+    ),
+    "maxi_dress": (
+        "Generate a professional fashion photograph of a maxi dress made from this fabric design. "
+        "Show the full-length dress on a mannequin or model in a clean studio setting. "
+        "The fabric pattern should be clearly visible. Elegant, high-fashion style, "
+        "white background, soft lighting."
+    ),
+    "aerial_drape": (
+        "Generate a professional overhead/aerial flat-lay photograph of this fabric design "
+        "draped softly on a white background. The fabric should have gentle folds and waves "
+        "to show texture and movement. Shot from directly above, clean minimal style, "
+        "soft natural lighting."
+    ),
+    "flat_lay": (
+        "Generate a professional flat-lay product photograph of this fabric design laid out "
+        "completely flat on a pure white background. The pattern should be perfectly visible "
+        "with no shadows or distortion. Clean, minimal, commercial photography style."
+    ),
+}
 
 
-def generate_mock_image(
-    design_image_bytes: bytes,
-    design_mime_type: str,
-    mock_prompt: str,
-    negative_prompt: str,
-    retry_count: int = 0,
-) -> bytes | None:
-    """
-    Send the fabric design image + mock prompt to Gemini and return
-    the generated mock image as raw bytes.
+class GeminiClient:
+    def __init__(self, config):
+        self.client = genai.Client(api_key=config.gemini_api_key)
+        self.model = config.gemini_model
 
-    Args:
-        design_image_bytes: Raw bytes of the original fabric design image.
-        design_mime_type:   MIME type of the design image, e.g. "image/jpeg".
-        mock_prompt:        The full text prompt for this mock type.
-        negative_prompt:    Instructions on what to avoid.
-        retry_count:        Internal counter for recursive retries (do not set manually).
+    def generate_mock(self, image_bytes, mock_type):
+        prompt = MOCK_PROMPTS[mock_type]
+        pil_image = Image.open(io.BytesIO(image_bytes))
 
-    Returns:
-        Raw bytes of the generated image, or None if all retries failed.
-    """
-    full_prompt = (
-        f"{mock_prompt}\n\n"
-        f"IMPORTANT CONSTRAINTS — {negative_prompt}\n\n"
-        "Generate ONLY the final product mock image. No text, no explanation."
-    )
+        logger.info(f"Generating {mock_type} mock via Gemini...")
 
-    try:
-        model = genai.GenerativeModel(model_name=GEMINI_MODEL)
-
-        response = model.generate_content(
-            contents=[
-                gtypes.Part.from_bytes(data=design_image_bytes, mime_type=design_mime_type),
-                full_prompt,
-            ],
-            generation_config=gtypes.GenerationConfig(
-                response_modalities=["IMAGE"],
-                temperature=0.4,
-            ),
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=[prompt, pil_image],
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE", "TEXT"]
+            )
         )
 
-        # Extract the first image part from the response
         for part in response.candidates[0].content.parts:
-            if hasattr(part, "inline_data") and part.inline_data:
+            if part.inline_data is not None:
                 return part.inline_data.data
 
-        raise ValueError("Gemini returned a response but no image data was found in it.")
-
-    except Exception as exc:
-        if retry_count < MAX_RETRIES - 1:
-            wait = 2 ** retry_count * 3
-            time.sleep(wait)
-            return generate_mock_image(design_image_bytes, design_mime_type, mock_prompt, negative_prompt, retry_count + 1)
-        else:
-            return None
-
-
-def get_image_mime_type(filename: str) -> str:
-    ext = filename.lower().split(".")[-1]
-    mapping = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png","webp":"image/webp","tiff":"image/tiff","bmp":"image/bmp"}
-    return mapping.get(ext, "image/jpeg")
+        raise ValueError(f"Gemini did not return an image for mock type: {mock_type}")
