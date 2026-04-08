@@ -1,80 +1,58 @@
 """
-mock_generator.py — Core processing loop.
-
-For each design image in the Drive input folder:
-  1. Check if already processed (skip if yes)
-  2. Download the design image bytes
-  3. Create an output subfolder named after the design
-  4. For each of the 4 mock types, call Gemini and upload the result
-  5. Mark the source file as processed (move to _Processed)
-  6. Log the result (success or failure per mock)
-  7. Continue to the next design file
+Mock Generator — orchestrates downloading a design image, generating 4 mocks via Gemini,
+and uploading results to the output folder in Google Drive.
 """
 
+import logging
 import time
-from pathlib import Path
+from src.gemini_client import GeminiClient
 
-from src.config import DELAY_BETWEEN_DESIGNS,MOCK_TYPES,MOVE_PROCESSED_FILES,OUTPUT_FORMAT
-from src.drive_client import already_processed_names,download_file_bytes,get_or_create_output_subfolder,list_input_images,move_to_processed,upload_mock_image
-from src.gemini_client import generate_mock_image,get_image_mime_type
-from src.utils import LogEntry,build_output_filename,get_design_base_name,print_progress
+logger = logging.getLogger(__name__)
+
+MOCK_TYPES = [
+    ("fabric_roll",  "mock_01_fabric_roll"),
+    ("maxi_dress",   "mock_02_maxi_dress"),
+    ("aerial_drape", "mock_03_aerial_drape"),
+    ("flat_lay",     "mock_04_flat_lay"),
+]
+
+GEMINI_DELAY_SECONDS = 2
 
 
-def run_batch() -> list:
-    log = []
-    print("\n" + "=" * 60)
-    print("  FABRIC MOCK AUTOMATION — Starting batch run")
-    print("=" * 60)
+class MockGenerator:
+    def __init__(self, config, drive_client):
+        self.config = config
+        self.drive = drive_client
+        self.gemini = GeminiClient(config)
 
-    print("\n[1/4] Reading input folder from Google Drive...")
-    input_files = list_input_images()
-    if not input_files:
-        print("  No image files found. Exiting.")
-        return log
-    print(f"  Found {len(input_files)} image file(s).")
+    def generate_mocks(self, design_file):
+        file_id = design_file['id']
+        file_name = design_file['name']
+        base_name = file_name.rsplit('.', 1)[0]
 
-    print("[2/4] Checking for already-processed designs...")
-    done_names = already_processed_names()
-    pending_files = [f for f in input_files if get_design_base_name(f["name"]) not in done_names]
-    if not pending_files:
-        print("  All designs already processed.")
-        return log
-    print(f"  {len(pending_files)} design(s) pending.")
-    print(f"\n[3/4] Processing designs (4 mocks each)...")
+        logger.info(f"Downloading design: {file_name}")
+        image_bytes = self.drive.download_file(file_id)
 
-    for idx, file_info in enumerate(pending_files, start=1):
-        sname = file_info["name"]
-        sid = file_info["id"]
-        bname = get_design_base_name(sname)
-        mime = get_image_mime_type(sname)
-        print_progress(idx, len(pending_files), bname)
-        try:
-            dbytes = download_file_bytes(sid)
-        except Exception as e:
-            log.append(LogEntry(design_name=bname,mock_id="ALL",mock_label="Download failed",status="FAILED",error=str(e)))
-            continue
-        try:
-            ofid = get_or_create_output_subfolder(bname)
-        except Exception as e:
-            log.append(LogEntry(design_name=bname,mock_id="ALL",mock_label="Folder failed",status="FAILED",error=str(e)))
-            continue
-        all_ok = True
-        for mock in MOCK_TYPES:
-            mid = mock["id"]; mlab = mock["label"]; mp = mock["prompt"]; neg = mock["negative"]
-            ofn = build_output_filename(bname, mid, OUTPUT_FORMAT)
-            print(f"   → Generating: {mlab}")
-            mib = generate_mock_image(dbytes, mime, mp, neg)
-            if mib is None:
-                log.append(LogEntry(design_name=bname,mock_id=mid,mock_label=mlab,status="FAILED",error="No image from Gemini"))
-                all_ok = False; continue
+        output_folder_id = self.drive.create_folder(
+            base_name, self.config.drive_output_folder_id
+        )
+
+        for mock_type, mock_suffix in MOCK_TYPES:
+            output_filename = f"{base_name}_{mock_suffix}.jpg"
+
             try:
-                uid = upload_mock_image(mib, ofn, ofid)
-                log.append(LogEntry(design_name=bname,mock_id=mid,mock_label=mlab,status="SUCCESS",output_filename=ofn,drive_file_id=uid))
+                mock_bytes = self.gemini.generate_mock(image_bytes, mock_type)
+                self.drive.upload_file(
+                    name=output_filename,
+                    data_bytes=mock_bytes,
+                    mime_type="image/jpeg",
+                    parent_id=output_folder_id
+                )
+                logger.info(f"  Saved: {output_filename}")
             except Exception as e:
-                log.append(LogEntry(design_name=bname,mock_id=mid,mock_label=mlab,status="FAILED",error=str(e)))
-                all_ok = False
-        if MOVE_PROCESSED_FILES and all_ok:
-            try: move_to_processed(sid)
-            except: pass
-        if idx < len(pending_files): time.sleep(DELAY_BETWEEN_DESIGNS)
-    return log
+                logger.error(f"  Failed {output_filename}: {e}")
+                raise
+
+            time.sleep(GEMINI_DELAY_SECONDS)
+
+        logger.info(f"Completed all 4 mocks for: {base_name}")
