@@ -1,6 +1,5 @@
 """
 Fabric Mock Automation - Main Entry Point
-Reads fabric design images from Google Drive and generates mock images via Gemini AI.
 """
 
 import sys
@@ -25,7 +24,7 @@ def main():
     drive_client = DriveClient(config)
     mock_generator = MockGenerator(config, drive_client)
 
-    logger.info(f"Scanning input folder: {config.drive_input_folder_id}")
+    logger.info("Scanning input folder...")
     design_files = drive_client.list_image_files(config.drive_input_folder_id)
 
     if not design_files:
@@ -45,4 +44,23 @@ def main():
         design_name = design_file['name'].rsplit('.', 1)[0]
 
         if design_name in processed_names:
-            logger.info(f"Skipping '{
+            logger.info("Skipping already processed: " + design_name)
+            skip_count += 1
+            continue
+
+        logger.info("Processing: " + design_file['name'])
+        try:
+            mock_generator.generate_mocks(design_file)
+            success_count += 1
+        except Exception as e:
+            logger.error("Failed to process " + design_file['name'] + ": " + str(e))
+            error_count += 1
+
+    logger.info("Done! Processed: " + str(success_count) + ", Skipped: " + str(skip_count) + ", Errors: " + str(error_count))
+
+    if error_count > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
